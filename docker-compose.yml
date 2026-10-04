@@ -1,0 +1,118 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+x-temporal-db: &temporal-db
+  DB: postgres12
+  DB_PORT: "5432"
+  POSTGRES_SEEDS: postgresql
+  POSTGRES_USER: ${POSTGRES_USER:-temporal}
+  POSTGRES_PWD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+services:
+  postgresql:
+    image: postgres:${POSTGRES_VERSION:-16}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # Not published to the host; only reachable on the compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    logging: *logging
+
+  # One-shot: creates/migrates schemas, then exits 0.
+  temporal-schema-setup:
+    build:
+      context: .
+      target: admin-tools
+      args:
+        TEMPORAL_VERSION: ${TEMPORAL_VERSION:-1.32.0}
+    image: temporal-admin-tools-local:${TEMPORAL_VERSION:-1.32.0}
+    restart: on-failure:5
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      <<: *temporal-db
+    entrypoint: ["/scripts/setup-postgres.sh"]
+    logging: *logging
+
+  temporal:
+    build:
+      context: .
+      target: server
+      args:
+        TEMPORAL_VERSION: ${TEMPORAL_VERSION:-1.32.0}
+    image: temporal-server-local:${TEMPORAL_VERSION:-1.32.0}
+    restart: unless-stopped
+    depends_on:
+      temporal-schema-setup:
+        condition: service_completed_successfully
+    environment:
+      <<: *temporal-db
+      BIND_ON_IP: 0.0.0.0
+      NUM_HISTORY_SHARDS: ${NUM_HISTORY_SHARDS:-128}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # No authorizer is configured (ports are exposed without auth); this
+      # acknowledges that explicitly and silences the startup warning.
+      TEMPORAL_ALLOW_NO_AUTH: "true"
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${TEMPORAL_GRPC_PORT:-7233}:7233"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7233"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    stop_grace_period: 30s
+    logging: *logging
+
+  # One-shot: registers the default namespace, then exits 0.
+  temporal-create-namespace:
+    image: temporal-admin-tools-local:${TEMPORAL_VERSION:-1.32.0}
+    restart: on-failure:5
+    depends_on:
+      temporal:
+        condition: service_healthy
+      temporal-schema-setup:
+        condition: service_completed_successfully
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      DEFAULT_NAMESPACE: ${DEFAULT_NAMESPACE:-default}
+      DEFAULT_NAMESPACE_RETENTION: ${DEFAULT_NAMESPACE_RETENTION:-72h}
+    entrypoint: ["/scripts/create-namespace.sh"]
+    logging: *logging
+
+  temporal-ui:
+    image: temporalio/ui:${TEMPORAL_UI_VERSION:-2.55.0}
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_DEFAULT_NAMESPACE: ${DEFAULT_NAMESPACE:-default}
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${TEMPORAL_UI_PORT:-8080}:8080"
+    logging: *logging
+
+  # Interactive admin shell, not started by default:
+  #   docker compose run --rm admin-tools temporal workflow list
+  admin-tools:
+    image: temporal-admin-tools-local:${TEMPORAL_VERSION:-1.32.0}
+    profiles: ["tools"]
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    logging: *logging
+
+volumes:
+  postgres-data:

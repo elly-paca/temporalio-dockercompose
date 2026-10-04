@@ -1,0 +1,8 @@
+# Dynamic config is re-read every 60s; edits take effect without a restart
+# only if you bind-mount this file. Baked into the image otherwise, so
+# rebuild (`docker compose build && docker compose up -d`) after changing it.
+#
+# Keys: https://github.com/temporalio/temporal/blob/main/common/dynamicconfig/constants.go
+limit.maxIDLength:
+  - value: 255
+    constraints: {}
