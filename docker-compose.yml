@@ -6,7 +6,7 @@ x-logging: &logging
 
 x-temporal-db: &temporal-db
   DB: postgres12
-  DB_PORT: "5432"
+  DB_PORT: ${POSTGRES_PORT:-5432}
   POSTGRES_SEEDS: postgresql
   POSTGRES_USER: ${POSTGRES_USER:-temporal}
   POSTGRES_PWD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -18,6 +18,8 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-temporal}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Postgres listens on PGPORT; pg_isready and the image's init scripts use it too.
+      PGPORT: ${POSTGRES_PORT:-5432}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     # Not published to the host; only reachable on the compose network.
